@@ -101,12 +101,11 @@
    (threads-lock :initform (bt:make-lock "threads-lock")
                  :reader websocket-threads-lock)))
 
-(defun send-opening-handshake (sec-websocket-key)
-  (let ((accept (generate-accept-hash-value sec-websocket-key)))
-    (setf (hunchentoot:return-code*) hunchentoot:+http-switching-protocols+)
-    (setf (hunchentoot:header-out "Upgrade") "websocket")
-    (setf (hunchentoot:header-out "Connection") "Upgrade")
-    (setf (hunchentoot:header-out "Sec-WebSocket-Accept") accept)))
+(defun send-opening-handshake (sec-websocket-accept)
+  (setf (hunchentoot:return-code*) hunchentoot:+http-switching-protocols+)
+  (setf (hunchentoot:header-out "Upgrade") "websocket")
+  (setf (hunchentoot:header-out "Connection") "Upgrade")
+  (setf (hunchentoot:header-out "Sec-WebSocket-Accept") sec-websocket-accept))
 
 #+nil
 (defvar *debug-stream* nil)
@@ -119,6 +118,7 @@
     (when (is-opening-handshake upgrade
                                 sec-websocket-key
                                 sec-websocket-version)
+      ;; Keep socket open
       (hunchentoot:detach-socket websocket-mixin)
       ;; TODO: Use public method
       (let ((stream (hunchentoot::content-stream request)))
@@ -136,7 +136,7 @@
                          when (= (frame-opcode frame) 8)
                            do (return))))
                 (websocket-threads websocket-mixin))))
-      (send-opening-handshake sec-websocket-key)
+      (send-opening-handshake (generate-accept-hash-value sec-websocket-key))
       t)))
 
 (defmethod hunchentoot:acceptor-dispatch-request ((mixin websocket-mixin)
