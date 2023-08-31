@@ -1,5 +1,4 @@
 (asdf:defsystem :tiny-websocket
   :serial t
-  :components ((:file "hunchentoot"))
-  :depends-on (:sha1
-               :hunchentoot))
+  :components ((:file "tiny-websocket"))
+  :depends-on (:sha1))
