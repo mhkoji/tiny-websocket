@@ -49,6 +49,7 @@
     seq))
 
 (defun parse-frame (stream)
+  (print (listen stream))
   (let ((frame (make-frame))
         (bit0-15 (byte-vector->bit-vector
                   (read-seq stream 2))))
@@ -93,22 +94,69 @@
 
 ;;;
 
+(defgeneric handle-frame (handler frame))
+
+(defmethod handle-frame (handler frame)
+  (print (list frame
+               (babel:octets-to-string
+                (frame-unmasked-payload frame)))))
+
+(defun handler-loop (handler stream)
+  (ignore-errors
+   (loop for frame = (parse-frame stream)
+         while frame do
+           (handle-frame handler frame)
+         when (= (frame-opcode frame) 8) do
+           (return))))
+
+;;;
+
+(defgeneric process-new-connection (taskmaster stream))
+
+(defclass taskmaster ()
+  ((handler :initform :handler
+            :reader taskmaster-handler)
+   (streams :initform nil
+            :accessor taskmaster-streams)
+   (streams-lock :initform (bt:make-lock "streams-lock")
+                 :reader taskmaster-streams-lock)))
+
+#+nil
+(defvar *debug-stream* nil)
+
+(defun call-with-stream-added (taskmaster stream fn)
+  (with-accessors ((streams taskmaster-streams)
+                   (streams-lock taskmaster-streams-lock)) taskmaster
+    (bt:with-lock-held (streams-lock)
+      (push stream streams))
+    (funcall fn)
+    (bt:with-lock-held (streams-lock)
+      (setf streams (remove stream streams)))))
+
+(defmacro with-stream-added ((taskmaster stream) &body body)
+  `(call-with-stream-added ,taskmaster ,stream (lambda () ,@body)))
+
+(defmethod process-new-connection ((taskmaster taskmaster) stream)
+  #+nil
+  (setq *debug-stream* stream)
+  (bt:make-thread
+   (lambda ()
+     (with-stream-added (taskmaster stream)
+       (handler-loop (taskmaster-handler taskmaster) stream)))))
+
+;;;
+
 (defclass websocket-mixin ()
   ((path :initarg :websocket-path
          :reader websocket-path)
-   (threads :initform nil
-            :accessor websocket-threads)
-   (threads-lock :initform (bt:make-lock "threads-lock")
-                 :reader websocket-threads-lock)))
+   (taskmaster :initarg :websocket-taskmaster
+               :reader websocket-taskmaster)))
 
 (defun send-opening-handshake (sec-websocket-accept)
   (setf (hunchentoot:return-code*) hunchentoot:+http-switching-protocols+)
   (setf (hunchentoot:header-out "Upgrade") "websocket")
   (setf (hunchentoot:header-out "Connection") "Upgrade")
   (setf (hunchentoot:header-out "Sec-WebSocket-Accept") sec-websocket-accept))
-
-#+nil
-(defvar *debug-stream* nil)
 
 (defun handle-opening-handshake (websocket-mixin request)
   (let* ((headers (hunchentoot:headers-in request))
@@ -120,22 +168,9 @@
                                 sec-websocket-version)
       ;; Keep socket open
       (hunchentoot:detach-socket websocket-mixin)
-      ;; TODO: Use public method
-      (let ((stream (hunchentoot::content-stream request)))
-        #+nil
-        (setq *debug-stream* stream)
-        (bt:with-lock-held ((websocket-threads-lock websocket-mixin))
-          (push (bt:make-thread
-                 (lambda ()
-                   (loop for frame = (ignore-errors
-                                      (parse-frame stream))
-                         while frame do
-                           (print (list frame
-                                        (babel:octets-to-string
-                                         (frame-unmasked-payload frame))))
-                         when (= (frame-opcode frame) 8)
-                           do (return))))
-                (websocket-threads websocket-mixin))))
+      (process-new-connection (websocket-taskmaster websocket-mixin)
+                              ;; TODO: Use public method
+                              (hunchentoot::content-stream request))
       (send-opening-handshake (generate-accept-hash-value sec-websocket-key))
       t)))
 
@@ -168,5 +203,6 @@
   (setq *acceptor*
         (make-instance 'acceptor
                        :websocket-path "/ws"
+                       :websocket-taskmaster (make-instance 'taskmaster)
                        :port 9000))
   (hunchentoot:start *acceptor*))
