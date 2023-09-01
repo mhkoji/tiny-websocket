@@ -132,33 +132,21 @@
                           extended-payload-len))))
     frame))
 
-(defun unmask-payload-data (masking-key payload-data)
-  (let ((seq (make-array (length payload-data)
-                         :element-type '(unsigned-byte 8))))
-    (loop for i from 0 below (length seq) do
-      (setf (aref seq i)
+(defun masking-transform (masking-key octets)
+  (assert (= (length masking-key) 4))
+  (let ((out-octets (make-array (length octets)
+                                :element-type '(unsigned-byte 8))))
+    (loop for i from 0 below (length octets) do
+      (setf (aref out-octets i)
             (logxor (aref masking-key (mod i 4))
-                    (aref payload-data i))))
-    seq))
+                    (aref octets i))))
+    out-octets))
 
 (defun frame-unmasked-payload (frame)
   (if (= (frame-mask frame) 1)
-      (unmask-payload-data (frame-masking-key frame)
-                           (frame-payload-data frame))
+      (masking-transform (frame-masking-key frame)
+                         (frame-payload-data frame))
       (frame-payload-data frame)))
-
-
-(let ((empty (make-array 0 :element-type '(unsigned-byte 8))))
-  (defun make-close-from-server-frame ()
-    (make-frame
-     :fin 1
-     :opcode #x8
-     :mask 0
-     :payload-len 0
-     :extended-payload-len 0
-     :masking-key empty
-     :payload-data empty)))
-
 
 (defun write-frame (stream frame)
   (let ((bit0-15 (make-sequence '(vector bit) 16
@@ -173,8 +161,6 @@
     (setf (subseq bit0-15 9 16)
           (->> (frame-payload-len frame)
                (byte->bit-vector 7)))
-    (setf (subseq bit0-15 9 16)
-          (byte->bit-vector 16 0))
     (write-byte (-> (subseq bit0-15 0 8)
                     (bit-vector->unsigned-byte))
                 stream)
@@ -187,31 +173,52 @@
           ((= payload-len 127))))
   (when (= (frame-mask frame) 1)
     (write-sequence (frame-masking-key frame) stream))
-  (write-sequence (frame-payload-data frame) stream))
+  (write-sequence (frame-payload-data frame) stream)
+  (force-output stream))
+
+(let ((empty (make-array 0 :element-type '(unsigned-byte 8))))
+  (defun server-sent-frame/close ()
+    (make-frame
+     :fin 1
+     :opcode #x8
+     :mask 0
+     :payload-len 0
+     :extended-payload-len 0
+     :masking-key empty
+     :payload-data empty))
+
+  (defun server-sent-frame/text (text)
+    (let ((payload-data (babel:string-to-octets text)))
+      (let ((len (length payload-data)))
+        (assert (< len 126))
+        (make-frame
+         :fin 1
+         :opcode #x1
+         :mask 0
+         :payload-len len
+         :extended-payload-len 0
+         :masking-key empty
+         :payload-data payload-data)))))
 
 ;;;
 
-(defgeneric handler-loop (handler stream))
-
-(defgeneric handle-frame (handler frames output-stream))
-
-(defgeneric handle-payload (handler type seq))
-
 (defclass handler () ())
 
-(defmethod handle-payload ((handler handler) type seq)
-  (print
-   (list
-    (if (eql type :text)
-        (-> (babel:octets-to-string seq)
-            ((lambda (str)
-               (if (< (length str) 10)
-                   str
-                   (subseq str 0 10)))))
-        seq)
-    (length seq))))
+(defgeneric on-open (handler stream)
+  (:method (handler stream)
+    nil))
 
-(defun conc-seq (seq-list)
+(defgeneric on-text (handler stream string)
+  (:method (handler stream string)
+    (print string)
+    nil))
+
+(defgeneric on-octets (handler stream seq)
+  (:method (handler stream seq)
+    nil))
+
+
+(defun append-seq (seq-list)
   (let ((ret-seq (make-array
                   (reduce #'+ (mapcar #'length seq-list))
                   :element-type '(unsigned-byte 8))))
@@ -221,20 +228,23 @@
       (setf (subseq ret-seq offset (+ offset len)) seq))
     ret-seq))
 
-(defmethod handle-frame ((handler handler) frames output-stream)
+(defun handle-frame (handler frames output-stream)
   (let ((first-frame (car frames)))
     (let ((opcode (frame-opcode first-frame)))
       (cond ((or (= opcode #x1)
                  (= opcode #x2))
-             (let ((seq-list
-                    (mapcar #'frame-unmasked-payload frames))
-                   (type
-                    (if (= opcode 1) :text :binary)))
-               (handle-payload handler type (conc-seq seq-list)))
+             (let ((octets (append-seq
+                            (mapcar #'frame-unmasked-payload
+                                    frames))))
+               (if (= opcode 1)
+                   ;; text
+                   (let ((text (babel:octets-to-string octets)))
+                     (on-text handler output-stream text))
+                   ;; binary
+                   (on-octets handler output-stream octets)))
              t)
             ((= opcode #x8)
-             (write-frame output-stream
-                          (make-close-from-server-frame))
+             (write-frame output-stream (server-sent-frame/close))
              nil)
             ((= opcode #x9)
 ;             (write-frame output-stream (make-pong-frame))
@@ -253,12 +263,14 @@
           while (= (frame-fin frame) 0))
     (nreverse frames)))
 
-(defmethod handler-loop ((handler handler) stream)
+(defun handler-loop (handler stream)
   (handler-case
-      (loop for frames = (read-frames stream)
-            while frames
-            for continue-p = (handle-frame handler frames stream)
-            while continue-p)
+      (progn
+        (on-open handler stream)
+        (loop for frames = (read-frames stream)
+              while frames
+              for continue-p = (handle-frame handler frames stream)
+              while continue-p))
     (error (c)
       (print c))))
 
