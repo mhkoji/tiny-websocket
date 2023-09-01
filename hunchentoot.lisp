@@ -3,8 +3,9 @@
 (in-package :tiny-websocket.hunchentoot)
 
 (defclass websocket-mixin ()
-  ((path :initarg :websocket-path
-         :reader websocket-path)
+  ((path
+    :initarg :websocket-path
+    :reader websocket-path)
    (taskmaster :initarg :websocket-taskmaster
                :reader websocket-taskmaster)))
 
@@ -24,10 +25,10 @@
                                                sec-websocket-version)
       ;; Keep socket open
       (hunchentoot:detach-socket websocket-mixin)
+      (send-opening-handshake (tiny-websocket:generate-accept-hash-value sec-websocket-key))
       (tiny-websocket:process-new-connection (websocket-taskmaster websocket-mixin)
                                              ;; TODO: Use public method
                                              (hunchentoot::content-stream request))
-      (send-opening-handshake (generate-accept-hash-value sec-websocket-key))
       t)))
 
 (defmethod hunchentoot:acceptor-dispatch-request ((mixin websocket-mixin)
@@ -55,8 +56,11 @@
 (defun start ()
   (stop)
   (setq *acceptor*
-        (make-instance 'acceptor
-                       :websocket-path "/ws"
-                       :websocket-taskmaster (make-instance 'tiny-websocket:taskmaster)
-                       :port 9000))
+        (let ((handler (make-instance 'tiny-websocket:handler)))
+          (make-instance 'acceptor
+                         :websocket-path "/ws"
+                         :websocket-taskmaster
+                         (make-instance 'tiny-websocket:taskmaster
+                                        :handler handler)
+                         :port 9000)))
   (hunchentoot:start *acceptor*))

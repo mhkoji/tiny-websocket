@@ -1,9 +1,33 @@
 (defpackage :tiny-websocket
   (:use :cl)
   (:export :is-opening-handshake
+           :generate-accept-hash-value
            :process-new-connection
+           :handler
            :taskmaster))
 (in-package :tiny-websocket)
+
+(defun simple-inserter (insert-fn)
+  (lambda (acc next)
+    (if (listp next)
+        (funcall insert-fn acc next)
+        (list next acc))))
+
+(defun insert-first (arg surround)
+  (list* (car surround) arg (cdr surround)))
+
+(defun insert-last (arg surround)
+  (append surround (list arg)))
+
+(defmacro -> (initial-form &rest forms)
+  (reduce (simple-inserter #'insert-first) forms
+          :initial-value initial-form))
+
+(defmacro ->> (initial-form &rest forms)
+  (reduce (simple-inserter #'insert-last) forms
+          :initial-value initial-form))
+
+;;;
 
 (defun is-opening-handshake (upgrade
                              sec-websocket-key
@@ -39,20 +63,26 @@
           (setf (bit bit-vector (+ j (* i 8))) (logand x 1))))
       bit-vector)))
 
-(defun bit-vector->byte (bit-vec)
+(defun bit-vector->unsigned-byte (bit-vec)
   (let ((value 0))
     (loop repeat (length bit-vec)
           for bit across bit-vec do
       (setf value (logior (ash value 1) bit)))
     value))
 
-(defun read-seq (stream size)
-  (let ((seq (make-array size :element-type '(unsigned-byte 8))))
+(defun byte->bit-vector (bit-size byte)
+  (let ((bit-vector (make-sequence '(vector bit) bit-size)))
+    (loop for x = byte then (ash x -1)
+          for j from (1- bit-size) downto 0 do
+      (setf (bit bit-vector j) (logand x 1)))
+    bit-vector))
+
+(defun read-seq (stream byte-size)
+  (let ((seq (make-array byte-size :element-type '(unsigned-byte 8))))
     (read-sequence seq stream)
     seq))
 
-(defun parse-frame (stream)
-  (print (listen stream))
+(defun read-frame (stream)
   (let ((frame (make-frame))
         (bit0-15 (byte-vector->bit-vector
                   (read-seq stream 2))))
@@ -65,21 +95,41 @@
     (setf (frame-fin frame)
           (bit bit0-15 0))
     (setf (frame-opcode frame)
-          (bit-vector->byte (subseq bit0-15 4 8)))
+          (-> (subseq bit0-15 4 8)
+              (bit-vector->unsigned-byte)))
     (setf (frame-mask frame)
           (bit bit0-15 8))
     (setf (frame-payload-len frame)
-          (bit-vector->byte (subseq bit0-15 9 16)))
+          (-> (subseq bit0-15 9 16)
+              (bit-vector->unsigned-byte)))
     (setf (frame-extended-payload-len frame)
-          (cond ((<= (frame-payload-len frame) 125) 0)
-                (t
-                 (assert nil))))
+          (let ((payload-len (frame-payload-len frame)))
+            (cond ((= payload-len 126)
+                   (-> (read-seq stream 2)
+                       (byte-vector->bit-vector)
+                       (bit-vector->unsigned-byte)))
+                  ((= payload-len 127)
+                   (let ((bit-vector
+                          (-> (read-seq stream 8)
+                              (byte-vector->bit-vector))))
+                     (assert (= (bit bit-vector 0) 0))
+                     (bit-vector->unsigned-byte bit-vector)))
+                  (t
+                   (assert (<= payload-len 125))
+                   0))))
     (setf (frame-masking-key frame)
           (if (= (frame-mask frame) 1)
               (read-seq stream 4)
               nil))
     (setf (frame-payload-data frame)
-          (read-seq stream (frame-payload-len frame)))
+          (let ((payload-len
+                 (frame-payload-len frame))
+                (extended-payload-len
+                 (frame-extended-payload-len frame)))
+            (read-seq stream
+                      (if (= extended-payload-len 0)
+                          payload-len
+                          extended-payload-len))))
     frame))
 
 (defun unmask-payload-data (masking-key payload-data)
@@ -92,25 +142,125 @@
     seq))
 
 (defun frame-unmasked-payload (frame)
-  (unmask-payload-data (frame-masking-key frame)
-                       (frame-payload-data frame)))
+  (if (= (frame-mask frame) 1)
+      (unmask-payload-data (frame-masking-key frame)
+                           (frame-payload-data frame))
+      (frame-payload-data frame)))
+
+
+(let ((empty (make-array 0 :element-type '(unsigned-byte 8))))
+  (defun make-close-from-server-frame ()
+    (make-frame
+     :fin 1
+     :opcode #x8
+     :mask 0
+     :payload-len 0
+     :extended-payload-len 0
+     :masking-key empty
+     :payload-data empty)))
+
+
+(defun write-frame (stream frame)
+  (let ((bit0-15 (make-sequence '(vector bit) 16
+                                :initial-element 0)))
+    (setf (bit bit0-15 0)
+          (frame-fin frame))
+    (setf (subseq bit0-15 4 8)
+          (->> (frame-opcode frame)
+               (byte->bit-vector 4)))
+    (setf (bit bit0-15 8)
+          (frame-mask frame))
+    (setf (subseq bit0-15 9 16)
+          (->> (frame-payload-len frame)
+               (byte->bit-vector 7)))
+    (setf (subseq bit0-15 9 16)
+          (byte->bit-vector 16 0))
+    (write-byte (-> (subseq bit0-15 0 8)
+                    (bit-vector->unsigned-byte))
+                stream)
+    (write-byte (-> (subseq bit0-15 8 16)
+                    (bit-vector->unsigned-byte))
+                stream))
+  (let ((payload-len (frame-payload-len frame)))
+    ;; TODO
+    (cond ((= payload-len 126))
+          ((= payload-len 127))))
+  (when (= (frame-mask frame) 1)
+    (write-sequence (frame-masking-key frame) stream))
+  (write-sequence (frame-payload-data frame) stream))
 
 ;;;
 
-(defgeneric handle-frame (handler frame))
+(defgeneric handler-loop (handler stream))
 
-(defmethod handle-frame (handler frame)
-  (print (list frame
-               (babel:octets-to-string
-                (frame-unmasked-payload frame)))))
+(defgeneric handle-frame (handler frames output-stream))
 
-(defun handler-loop (handler stream)
-  (ignore-errors
-   (loop for frame = (parse-frame stream)
-         while frame do
-           (handle-frame handler frame)
-         when (= (frame-opcode frame) 8) do
-           (return))))
+(defgeneric handle-payload (handler type seq))
+
+(defclass handler () ())
+
+(defmethod handle-payload ((handler handler) type seq)
+  (print
+   (list
+    (if (eql type :text)
+        (-> (babel:octets-to-string seq)
+            ((lambda (str)
+               (if (< (length str) 10)
+                   str
+                   (subseq str 0 10)))))
+        seq)
+    (length seq))))
+
+(defun conc-seq (seq-list)
+  (let ((ret-seq (make-array
+                  (reduce #'+ (mapcar #'length seq-list))
+                  :element-type '(unsigned-byte 8))))
+    (loop for seq in seq-list
+          for len = (length seq)
+          for offset = 0 then (+ offset len) do
+      (setf (subseq ret-seq offset (+ offset len)) seq))
+    ret-seq))
+
+(defmethod handle-frame ((handler handler) frames output-stream)
+  (let ((first-frame (car frames)))
+    (let ((opcode (frame-opcode first-frame)))
+      (cond ((or (= opcode #x1)
+                 (= opcode #x2))
+             (let ((seq-list
+                    (mapcar #'frame-unmasked-payload frames))
+                   (type
+                    (if (= opcode 1) :text :binary)))
+               (handle-payload handler type (conc-seq seq-list)))
+             t)
+            ((= opcode #x8)
+             (write-frame output-stream
+                          (make-close-from-server-frame))
+             nil)
+            ((= opcode #x9)
+;             (write-frame output-stream (make-pong-frame))
+             t)
+            ((= opcode #xA)
+;             (write-frame output-stream (make-ping-frame))
+             t)
+            (t
+             (assert nil))))))
+
+(defun read-frames (stream)
+  (let ((frames nil))
+    (loop for frame = (read-frame stream)
+          while stream do
+            (push frame frames)
+          while (= (frame-fin frame) 0))
+    (nreverse frames)))
+
+(defmethod handler-loop ((handler handler) stream)
+  (handler-case
+      (loop for frames = (read-frames stream)
+            while frames
+            for continue-p = (handle-frame handler frames stream)
+            while continue-p)
+    (error (c)
+      (print c))))
 
 ;;;
 
@@ -118,6 +268,7 @@
 
 (defclass taskmaster ()
   ((handler :initform :handler
+            :initarg :handler
             :reader taskmaster-handler)
    (streams :initform nil
             :accessor taskmaster-streams)
@@ -145,4 +296,5 @@
   (bt:make-thread
    (lambda ()
      (with-stream-added (taskmaster stream)
-       (handler-loop (taskmaster-handler taskmaster) stream)))))
+       (handler-loop (taskmaster-handler taskmaster) stream)
+       (close stream)))))
