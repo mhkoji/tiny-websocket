@@ -4,15 +4,20 @@
 (in-package :tiny-websocket.hunchentoot)
 
 (defclass websocket-mixin ()
-  ((path
-    :initarg :websocket-path
-    :reader websocket-path)
+  ;; Selecting a handler depends on a request, which interface is
+  ;; heavily affected by implementation of a web server.
+  ;; Thus this alist is in this layer.
+  ;; However we can select a handler in the taskmaster layer and it 
+  ;; might be a more appropriate design.
+  ((path-handler-alist
+    :initarg :websocket-path-handler-alist
+    :reader websocket-path-handler-alist)
+   (taskmaster
+    :initform (make-instance 'tiny-websocket:taskmaster)
+    :reader websocket-taskmaster)
    (timeout-sec
     :initform 300
-    :reader websocket-timeout-sec)
-   (taskmaster
-    :initarg :websocket-taskmaster
-    :reader websocket-taskmaster)))
+    :reader websocket-timeout-sec)))
 
 (defvar *current-socket*
   nil)
@@ -31,16 +36,22 @@
     (when (tiny-websocket:is-opening-handshake upgrade
                                                sec-websocket-key
                                                sec-websocket-version)
-      ;; Keep socket open
-      (hunchentoot:detach-socket websocket-mixin)
-      (let ((timeout-sec (websocket-timeout-sec websocket-mixin)))
-        ;; TODO: Use public method
-        (hunchentoot::set-timeouts *current-socket* timeout-sec timeout-sec))
-      (send-opening-handshake (tiny-websocket:generate-accept-hash-value sec-websocket-key))
-      (tiny-websocket:process-new-connection (websocket-taskmaster websocket-mixin)
-                                             ;; TODO: Use public method
-                                             (hunchentoot::content-stream request))
-      t)))
+      (let ((handler (cdr (assoc (hunchentoot:script-name request)
+                                 (websocket-path-handler-alist websocket-mixin)
+                                 :test #'string=))))
+        (when handler
+          ;; Keep socket open
+          (hunchentoot:detach-socket websocket-mixin)
+          (let ((timeout-sec (websocket-timeout-sec websocket-mixin)))
+            ;; TODO: Use public method
+            (hunchentoot::set-timeouts *current-socket* timeout-sec timeout-sec))
+          (send-opening-handshake (tiny-websocket:generate-accept-hash-value
+                                   sec-websocket-key))
+          (let ((taskmaster (websocket-taskmaster websocket-mixin))
+                ;; TODO: Use public method
+                (stream (hunchentoot::content-stream request)))
+            (tiny-websocket:process-new-connection taskmaster handler stream))
+          t)))))
 
 (defmethod hunchentoot:process-connection :around ((mixin websocket-mixin)
                                                    socket)
@@ -50,8 +61,6 @@
 (defmethod hunchentoot:acceptor-dispatch-request ((mixin websocket-mixin)
                                                   request)
   (let ((opening-handshake-success-p
-         (and (string= (hunchentoot:script-name request)
-                       (websocket-path mixin))
-              (handle-opening-handshake mixin request))))
+         (handle-opening-handshake mixin request)))
     (when (not opening-handshake-success-p)
       (call-next-method))))

@@ -41,8 +41,7 @@
   (stop)
   (setq *acceptor*
         (make-instance 'acceptor
-         :websocket-path "/ws"
-         :websocket-taskmaster (make-instance 'tiny-websocket:taskmaster
-                                :handler (make-instance 'handler))
+         :websocket-path-handler-alist
+         (list (cons "/ws" (make-instance 'handler)))
          :port 9000))
   (hunchentoot:start *acceptor*))

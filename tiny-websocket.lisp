@@ -39,8 +39,10 @@
 (defun is-opening-handshake (upgrade
                              sec-websocket-key
                              sec-websocket-version)
-  (declare (ignore sec-websocket-version))
-  (and (string= upgrade "websocket")
+  (and (stringp upgrade)
+       (stringp sec-websocket-key)
+       (stringp sec-websocket-version)
+       (string= upgrade "websocket")
        (stringp sec-websocket-key)))
 
 (let ((guid "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
@@ -318,13 +320,10 @@
 
 ;;;
 
-(defgeneric process-new-connection (taskmaster stream))
+(defgeneric process-new-connection (taskmaster handler stream))
 
 (defclass taskmaster ()
-  ((handler :initform :handler
-            :initarg :handler
-            :reader taskmaster-handler)
-   (streams :initform nil
+  ((streams :initform nil
             :accessor taskmaster-streams)
    (streams-lock :initform (bt:make-lock "streams-lock")
                  :reader taskmaster-streams-lock)))
@@ -342,9 +341,9 @@
 (defmacro with-stream-added ((taskmaster stream) &body body)
   `(call-with-stream-added ,taskmaster ,stream (lambda () ,@body)))
 
-(defmethod process-new-connection ((taskmaster taskmaster) stream)
+(defmethod process-new-connection ((taskmaster taskmaster) handler stream)
   (bt:make-thread
    (lambda ()
      (with-stream-added (taskmaster stream)
-       (handler-loop (taskmaster-handler taskmaster) stream)
+       (handler-loop handler stream)
        (close stream)))))
