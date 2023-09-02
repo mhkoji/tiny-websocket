@@ -3,6 +3,9 @@
   (:export :is-opening-handshake
            :generate-accept-hash-value
            :process-new-connection
+           :on-open
+           :on-text
+           :on-binary
            :handler
            :taskmaster))
 (in-package :tiny-websocket)
@@ -224,13 +227,17 @@
 
 (defclass handler () ())
 
+;; TODO
+(defgeneric create-client (handler stream)
+  (:method (handler stream)
+    stream))
+
 (defgeneric on-open (handler stream)
   (:method (handler stream)
     nil))
 
 (defgeneric on-text (handler stream string)
   (:method (handler stream string)
-    (print string)
     nil))
 
 (defgeneric on-binary (handler stream seq)

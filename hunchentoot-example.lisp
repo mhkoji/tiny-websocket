@@ -9,6 +9,14 @@
      hunchentoot:acceptor)
   ())
 
+(defclass handler (tiny-websocket:handler)
+  ())
+
+(defmethod tiny-websocket:on-text ((handler handler) stream string)
+  (print string))
+
+;;;
+
 (defvar *acceptor* nil)
 
 (defun stop ()
@@ -19,11 +27,9 @@
 (defun start ()
   (stop)
   (setq *acceptor*
-        (let ((handler (make-instance 'tiny-websocket:handler)))
-          (make-instance 'acceptor
-                         :websocket-path "/ws"
-                         :websocket-taskmaster
-                         (make-instance 'tiny-websocket:taskmaster
-                                        :handler handler)
-                         :port 9000)))
+        (make-instance 'acceptor
+         :websocket-path "/ws"
+         :websocket-taskmaster (make-instance 'tiny-websocket:taskmaster
+                                :handler (make-instance 'handler))
+         :port 9000))
   (hunchentoot:start *acceptor*))
