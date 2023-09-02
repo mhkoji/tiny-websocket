@@ -63,7 +63,7 @@
           (setf (bit bit-vector (+ j (* i 8))) (logand x 1))))
       bit-vector)))
 
-(defun bit-vector->unsigned-byte (bit-vec)
+(defun bit-vector->ubyte (bit-vec)
   (let ((value 0))
     (loop repeat (length bit-vec)
           for bit across bit-vec do
@@ -96,24 +96,24 @@
           (bit bit0-15 0))
     (setf (frame-opcode frame)
           (-> (subseq bit0-15 4 8)
-              (bit-vector->unsigned-byte)))
+              (bit-vector->ubyte)))
     (setf (frame-mask frame)
           (bit bit0-15 8))
     (setf (frame-payload-len frame)
           (-> (subseq bit0-15 9 16)
-              (bit-vector->unsigned-byte)))
+              (bit-vector->ubyte)))
     (setf (frame-extended-payload-len frame)
           (let ((payload-len (frame-payload-len frame)))
             (cond ((= payload-len 126)
                    (-> (read-seq stream 2)
                        (byte-vector->bit-vector)
-                       (bit-vector->unsigned-byte)))
+                       (bit-vector->ubyte)))
                   ((= payload-len 127)
                    (let ((bit-vector
                           (-> (read-seq stream 8)
                               (byte-vector->bit-vector))))
                      (assert (= (bit bit-vector 0) 0))
-                     (bit-vector->unsigned-byte bit-vector)))
+                     (bit-vector->ubyte bit-vector)))
                   (t
                    (assert (<= payload-len 125))
                    0))))
@@ -148,6 +148,7 @@
                          (frame-payload-data frame))
       (frame-payload-data frame)))
 
+;; TODO: may need write lock
 (defun write-frame (stream frame)
   (let ((bit0-15 (make-sequence '(vector bit) 16
                                 :initial-element 0)))
@@ -162,10 +163,10 @@
           (->> (frame-payload-len frame)
                (byte->bit-vector 7)))
     (write-byte (-> (subseq bit0-15 0 8)
-                    (bit-vector->unsigned-byte))
+                    (bit-vector->ubyte))
                 stream)
     (write-byte (-> (subseq bit0-15 8 16)
-                    (bit-vector->unsigned-byte))
+                    (bit-vector->ubyte))
                 stream))
   (let ((payload-len (frame-payload-len frame)))
     ;; TODO
@@ -177,15 +178,15 @@
   (force-output stream))
 
 (let ((empty (make-array 0 :element-type '(unsigned-byte 8))))
-  (defun server-sent-frame/close ()
-    (make-frame
-     :fin 1
-     :opcode #x8
-     :mask 0
-     :payload-len 0
-     :extended-payload-len 0
-     :masking-key empty
-     :payload-data empty))
+  (let ((frame (make-frame
+                :fin 1
+                :opcode #x8
+                :mask 0
+                :payload-len 0
+                :extended-payload-len 0
+                :masking-key empty
+                :payload-data empty)))
+    (defun server-sent-frame/close () frame))
 
   (defun server-sent-frame/text (text)
     (let ((payload-data (babel:string-to-octets text)))
@@ -198,7 +199,27 @@
          :payload-len len
          :extended-payload-len 0
          :masking-key empty
-         :payload-data payload-data)))))
+         :payload-data payload-data))))
+
+  (let ((frame (make-frame
+                :fin 1
+                :opcode #x9
+                :mask 0
+                :payload-len 0
+                :extended-payload-len 0
+                :masking-key empty
+                :payload-data empty)))
+    (defun server-sent-frame/ping () frame))
+
+  (let ((frame (make-frame
+                :fin 1
+                :opcode #xA
+                :mask 0
+                :payload-len 0
+                :extended-payload-len 0
+                :masking-key empty
+                :payload-data empty)))
+    (defun server-sent-frame/pong () frame)))
 
 ;;;
 
@@ -213,7 +234,7 @@
     (print string)
     nil))
 
-(defgeneric on-octets (handler stream seq)
+(defgeneric on-binary (handler stream seq)
   (:method (handler stream seq)
     nil))
 
@@ -241,16 +262,16 @@
                    (let ((text (babel:octets-to-string octets)))
                      (on-text handler output-stream text))
                    ;; binary
-                   (on-octets handler output-stream octets)))
+                   (on-binary handler output-stream octets)))
              t)
             ((= opcode #x8)
              (write-frame output-stream (server-sent-frame/close))
              nil)
             ((= opcode #x9)
-;             (write-frame output-stream (make-pong-frame))
+             (write-frame output-stream (server-sent-frame/pong))
              t)
             ((= opcode #xA)
-;             (write-frame output-stream (make-ping-frame))
+             (write-frame output-stream (server-sent-frame/ping))
              t)
             (t
              (assert nil))))))
@@ -258,7 +279,10 @@
 (defun read-frames (stream)
   (let ((frames nil))
     (loop for frame = (read-frame stream)
-          while stream do
+          while frame
+          if (= (frame-mask frame) 0) do
+            (return nil)
+          else do
             (push frame frames)
           while (= (frame-fin frame) 0))
     (nreverse frames)))
@@ -272,7 +296,7 @@
               for continue-p = (handle-frame handler frames stream)
               while continue-p))
     (error (c)
-      (print c))))
+      (print c)))) ;; TODO
 
 ;;;
 
@@ -287,9 +311,6 @@
    (streams-lock :initform (bt:make-lock "streams-lock")
                  :reader taskmaster-streams-lock)))
 
-#+nil
-(defvar *debug-stream* nil)
-
 (defun call-with-stream-added (taskmaster stream fn)
   (with-accessors ((streams taskmaster-streams)
                    (streams-lock taskmaster-streams-lock)) taskmaster
@@ -303,8 +324,6 @@
   `(call-with-stream-added ,taskmaster ,stream (lambda () ,@body)))
 
 (defmethod process-new-connection ((taskmaster taskmaster) stream)
-  #+nil
-  (setq *debug-stream* stream)
   (bt:make-thread
    (lambda ()
      (with-stream-added (taskmaster stream)

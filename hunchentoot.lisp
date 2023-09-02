@@ -6,8 +6,15 @@
   ((path
     :initarg :websocket-path
     :reader websocket-path)
-   (taskmaster :initarg :websocket-taskmaster
-               :reader websocket-taskmaster)))
+   (timeout-sec
+    :initform 300
+    :reader websocket-timeout-sec)
+   (taskmaster
+    :initarg :websocket-taskmaster
+    :reader websocket-taskmaster)))
+
+(defvar *current-socket*
+  nil)
 
 (defun send-opening-handshake (sec-websocket-accept)
   (setf (hunchentoot:return-code*) hunchentoot:+http-switching-protocols+)
@@ -25,11 +32,19 @@
                                                sec-websocket-version)
       ;; Keep socket open
       (hunchentoot:detach-socket websocket-mixin)
+      (let ((timeout-sec (websocket-timeout-sec websocket-mixin)))
+        ;; TODO: Use public method
+        (hunchentoot::set-timeouts *current-socket* timeout-sec timeout-sec))
       (send-opening-handshake (tiny-websocket:generate-accept-hash-value sec-websocket-key))
       (tiny-websocket:process-new-connection (websocket-taskmaster websocket-mixin)
                                              ;; TODO: Use public method
                                              (hunchentoot::content-stream request))
       t)))
+
+(defmethod hunchentoot:process-connection :around ((mixin websocket-mixin)
+                                                   socket)
+  (let ((*current-socket* socket))
+    (call-next-method)))
 
 (defmethod hunchentoot:acceptor-dispatch-request ((mixin websocket-mixin)
                                                   request)
