@@ -315,9 +315,10 @@
                    (streams-lock taskmaster-streams-lock)) taskmaster
     (bt:with-lock-held (streams-lock)
       (push stream streams))
-    (funcall fn)
-    (bt:with-lock-held (streams-lock)
-      (setf streams (remove stream streams)))))
+    (unwind-protect
+         (funcall fn)
+      (bt:with-lock-held (streams-lock)
+        (setf streams (remove stream streams))))))
 
 (defmacro with-stream-added ((taskmaster stream) &body body)
   `(call-with-stream-added ,taskmaster ,stream (lambda () ,@body)))
