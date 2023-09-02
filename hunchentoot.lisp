@@ -1,5 +1,6 @@
 (defpackage :tiny-websocket.hunchentoot
-  (:use :cl))
+  (:use :cl)
+  (:export :websocket-mixin))
 (in-package :tiny-websocket.hunchentoot)
 
 (defclass websocket-mixin ()
@@ -54,28 +55,3 @@
               (handle-opening-handshake mixin request))))
     (when (not opening-handshake-success-p)
       (call-next-method))))
-
-;;;
-
-(defclass acceptor (websocket-mixin
-                    hunchentoot:acceptor)
-  ())
-
-(defvar *acceptor* nil)
-
-(defun stop ()
-  (when *acceptor*
-    (hunchentoot:stop *acceptor*))
-  (values))
-
-(defun start ()
-  (stop)
-  (setq *acceptor*
-        (let ((handler (make-instance 'tiny-websocket:handler)))
-          (make-instance 'acceptor
-                         :websocket-path "/ws"
-                         :websocket-taskmaster
-                         (make-instance 'tiny-websocket:taskmaster
-                                        :handler handler)
-                         :port 9000)))
-  (hunchentoot:start *acceptor*))
