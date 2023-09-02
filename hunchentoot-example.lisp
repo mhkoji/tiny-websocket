@@ -12,8 +12,21 @@
 (defclass handler (tiny-websocket:handler)
   ())
 
-(defmethod tiny-websocket:on-text ((handler handler) stream string)
+(defclass client (tiny-websocket:client)
+  ((id :initarg :id
+       :reader client-id)))
+
+(defmethod tiny-websocket:create-client ((hander handler) stream)
+  (make-instance 'client
+                 :id (get-universal-time)
+                 :stream stream))
+
+(defmethod tiny-websocket:on-text ((handler handler) client string)
   (print string))
+
+(defmethod tiny-websocket:on-text ((handler handler) (client client)
+                                   string)
+  (print (list (client-id client) string)))
 
 ;;;
 

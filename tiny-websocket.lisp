@@ -3,6 +3,9 @@
   (:export :is-opening-handshake
            :generate-accept-hash-value
            :process-new-connection
+           :client
+           :client-stream
+           :create-client
            :on-open
            :on-text
            :on-binary
@@ -225,23 +228,29 @@
 
 ;;;
 
+(defgeneric client-stream (client))
+
+(defclass client ()
+  ((stream
+    :initarg :stream
+    :reader client-stream)))
+
 (defclass handler () ())
 
-;; TODO
 (defgeneric create-client (handler stream)
   (:method (handler stream)
-    stream))
+    (make-instance 'client :stream stream)))
 
-(defgeneric on-open (handler stream)
-  (:method (handler stream)
+(defgeneric on-open (handler client)
+  (:method (handler client)
     nil))
 
-(defgeneric on-text (handler stream string)
-  (:method (handler stream string)
+(defgeneric on-text (handler client string)
+  (:method (handler client string)
     nil))
 
-(defgeneric on-binary (handler stream seq)
-  (:method (handler stream seq)
+(defgeneric on-binary (handler client seq)
+  (:method (handler client seq)
     nil))
 
 
@@ -255,7 +264,7 @@
       (setf (subseq ret-seq offset (+ offset len)) seq))
     ret-seq))
 
-(defun handle-frame (handler frames output-stream)
+(defun handle-frame (handler frames client)
   (let ((first-frame (car frames)))
     (let ((opcode (frame-opcode first-frame)))
       (cond ((or (= opcode #x1)
@@ -266,18 +275,21 @@
                (if (= opcode 1)
                    ;; text
                    (let ((text (babel:octets-to-string octets)))
-                     (on-text handler output-stream text))
+                     (on-text handler client text))
                    ;; binary
-                   (on-binary handler output-stream octets)))
+                   (on-binary handler client octets)))
              t)
             ((= opcode #x8)
-             (write-frame output-stream (server-sent-frame/close))
+             (write-frame (client-stream client)
+                          (server-sent-frame/close))
              nil)
             ((= opcode #x9)
-             (write-frame output-stream (server-sent-frame/pong))
+             (write-frame (client-stream client)
+                          (server-sent-frame/pong))
              t)
             ((= opcode #xA)
-             (write-frame output-stream (server-sent-frame/ping))
+             (write-frame (client-stream client)
+                          (server-sent-frame/ping))
              t)
             (t
              (assert nil))))))
@@ -295,11 +307,11 @@
 
 (defun handler-loop (handler stream)
   (handler-case
-      (progn
-        (on-open handler stream)
+      (let ((client (create-client handler stream)))
+        (on-open handler client)
         (loop for frames = (read-frames stream)
               while frames
-              for continue-p = (handle-frame handler frames stream)
+              for continue-p = (handle-frame handler frames client)
               while continue-p))
     (error (c)
       (print c)))) ;; TODO
