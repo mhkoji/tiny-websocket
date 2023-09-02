@@ -55,38 +55,38 @@
   masking-key
   payload-data)
 
-(defun byte-vector->bit-vector (byte-vec)
-  (let ((byte-num (length byte-vec)))
-    (let ((bit-vector (make-sequence '(vector bit)
-                                     (* 8 byte-num))))
-      (loop for i from 0 for byte across byte-vec do
-        (loop for x = byte then (ash x -1) for j from 7 downto 0 do
-          (setf (bit bit-vector (+ j (* i 8))) (logand x 1))))
-      bit-vector)))
-
-(defun bit-vector->ubyte (bit-vec)
-  (let ((value 0))
-    (loop repeat (length bit-vec)
-          for bit across bit-vec do
-      (setf value (logior (ash value 1) bit)))
-    value))
-
-(defun byte->bit-vector (bit-size byte)
+(defun octet-to-bit-vector (byte bit-size)
   (let ((bit-vector (make-sequence '(vector bit) bit-size)))
     (loop for x = byte then (ash x -1)
           for j from (1- bit-size) downto 0 do
       (setf (bit bit-vector j) (logand x 1)))
     bit-vector))
 
-(defun read-seq (stream byte-size)
-  (let ((seq (make-array byte-size :element-type '(unsigned-byte 8))))
-    (read-sequence seq stream)
-    seq))
+(defun bit-vector-to-octet (bit-vec)
+  (let ((value 0))
+    (loop repeat (length bit-vec)
+          for bit across bit-vec do
+      (setf value (logior (ash value 1) bit)))
+    value))
+
+(defun octets-to-single-octet (octets)
+  (loop for octet across octets
+        for shift from (1- (length octets)) downto 0
+        sum (ash octet (* 8 shift))))
+
+(defun read-octets (stream byte-size)
+  (let ((octets (make-array byte-size
+                            :element-type '(unsigned-byte 8))))
+    (read-sequence octets stream)
+    octets))
+
+(defun read-into-single-octet (stream byte-size)
+  (octets-to-single-octet (read-octets stream byte-size)))
 
 (defun read-frame (stream)
   (let ((frame (make-frame))
-        (bit0-15 (byte-vector->bit-vector
-                  (read-seq stream 2))))
+        (bit0-15 (-> (read-into-single-octet stream 2)
+                     (octet-to-bit-vector 16))))
     (let ((rsv1 (bit bit0-15 1))
           (rsv2 (bit bit0-15 2))
           (rsv3 (bit bit0-15 3)))
@@ -97,40 +97,38 @@
           (bit bit0-15 0))
     (setf (frame-opcode frame)
           (-> (subseq bit0-15 4 8)
-              (bit-vector->ubyte)))
+              (bit-vector-to-octet)))
     (setf (frame-mask frame)
           (bit bit0-15 8))
     (setf (frame-payload-len frame)
           (-> (subseq bit0-15 9 16)
-              (bit-vector->ubyte)))
+              (bit-vector-to-octet)))
     (setf (frame-extended-payload-len frame)
           (let ((payload-len (frame-payload-len frame)))
             (cond ((= payload-len 126)
-                   (-> (read-seq stream 2)
-                       (byte-vector->bit-vector)
-                       (bit-vector->ubyte)))
+                   (read-into-single-octet stream 2))
                   ((= payload-len 127)
-                   (let ((bit-vector
-                          (-> (read-seq stream 8)
-                              (byte-vector->bit-vector))))
-                     (assert (= (bit bit-vector 0) 0))
-                     (bit-vector->ubyte bit-vector)))
+                   (let ((octet (read-into-single-octet
+                                 stream 8)))
+                     (assert
+                      (= (bit (octet-to-bit-vector octet 0)) 0))
+                     octet))
                   (t
                    (assert (<= payload-len 125))
                    0))))
     (setf (frame-masking-key frame)
           (if (= (frame-mask frame) 1)
-              (read-seq stream 4)
+              (read-octets stream 4)
               nil))
     (setf (frame-payload-data frame)
           (let ((payload-len
                  (frame-payload-len frame))
                 (extended-payload-len
                  (frame-extended-payload-len frame)))
-            (read-seq stream
-                      (if (= extended-payload-len 0)
-                          payload-len
-                          extended-payload-len))))
+            (read-octets stream
+                         (if (= extended-payload-len 0)
+                             payload-len
+                             extended-payload-len))))
     frame))
 
 (defun masking-transform (masking-key octets)
@@ -156,18 +154,18 @@
     (setf (bit bit0-15 0)
           (frame-fin frame))
     (setf (subseq bit0-15 4 8)
-          (->> (frame-opcode frame)
-               (byte->bit-vector 4)))
+          (-> (frame-opcode frame)
+              (octet-to-bit-vector 4)))
     (setf (bit bit0-15 8)
           (frame-mask frame))
     (setf (subseq bit0-15 9 16)
-          (->> (frame-payload-len frame)
-               (byte->bit-vector 7)))
+          (-> (frame-payload-len frame)
+              (octet-to-bit-vector 7)))
     (write-byte (-> (subseq bit0-15 0 8)
-                    (bit-vector->ubyte))
+                    (bit-vector-to-octet))
                 stream)
     (write-byte (-> (subseq bit0-15 8 16)
-                    (bit-vector->ubyte))
+                    (bit-vector-to-octet))
                 stream))
   (let ((payload-len (frame-payload-len frame)))
     ;; TODO
