@@ -9,24 +9,23 @@
      hunchentoot:acceptor)
   ())
 
-(defclass handler (tiny-websocket:handler)
-  ())
-
 (defclass client (tiny-websocket:client)
   ((id :initarg :id
        :reader client-id)))
 
+(defclass handler (tiny-websocket:handler)
+  ())
+
 (defmethod tiny-websocket:create-client ((hander handler) stream)
-  (make-instance 'client
-                 :id (get-universal-time)
-                 :stream stream))
+  (let ((id (get-universal-time)))
+    (make-instance 'client :id id :stream stream)))
 
 (defmethod tiny-websocket:on-text ((handler handler) client string)
-  (print string))
+  (log:info "~A" string))
 
 (defmethod tiny-websocket:on-text ((handler handler) (client client)
                                    string)
-  (print (list (client-id client) string)))
+  (log:info "[~A] ~A" (client-id client) string))
 
 ;;;
 
