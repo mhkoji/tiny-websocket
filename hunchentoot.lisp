@@ -28,6 +28,11 @@
   (setf (hunchentoot:header-out "Connection") "Upgrade")
   (setf (hunchentoot:header-out "Sec-WebSocket-Accept") sec-websocket-accept))
 
+(defun find-handler (websocket-mixin request)
+  (cdr (assoc (hunchentoot:script-name request)
+              (websocket-path-handler-alist websocket-mixin)
+              :test #'string=)))
+
 (defun handle-opening-handshake (websocket-mixin request)
   (let* ((headers (hunchentoot:headers-in request))
          (upgrade (cdr (assoc :upgrade headers)))
@@ -36,9 +41,7 @@
     (when (tiny-websocket:is-opening-handshake upgrade
                                                sec-websocket-key
                                                sec-websocket-version)
-      (let ((handler (cdr (assoc (hunchentoot:script-name request)
-                                 (websocket-path-handler-alist websocket-mixin)
-                                 :test #'string=))))
+      (let ((handler (find-handler websocket-mixin request)))
         (when handler
           ;; Keep socket open
           (hunchentoot:detach-socket websocket-mixin)

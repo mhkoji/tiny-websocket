@@ -1,7 +1,7 @@
 (asdf:defsystem :tiny-websocket
   :serial t
   :components ((:file "tiny-websocket"))
-  :depends-on (:cl-base64
-               :babel
+  :depends-on (:babel
                :bordeaux-threads
+               :cl-base64
                :sha1))
