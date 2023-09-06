@@ -2,14 +2,15 @@
   (:use :cl)
   (:export :is-opening-handshake
            :generate-accept-hash-value
-           :process-new-connection
-           :client
            :client-stream
+           :client-write-text
            :create-client
            :on-open
            :on-text
            :on-binary
+           :client
            :handler
+           :process-new-connection
            :taskmaster))
 (in-package :tiny-websocket)
 
@@ -177,8 +178,7 @@
                 stream))
   (let ((payload-len (frame-payload-len frame)))
     ;; TODO
-    (cond ((= payload-len 126))
-          ((= payload-len 127))))
+    (assert (<= payload-len 125)))
   (when (= (frame-mask frame) 1)
     (write-sequence (frame-masking-key frame) stream))
   (write-sequence (frame-payload-data frame) stream)
@@ -195,18 +195,17 @@
                 :payload-data empty)))
     (defun server-sent-frame/close () frame))
 
-  (defun server-sent-frame/text (text)
-    (let ((payload-data (babel:string-to-octets text)))
-      (let ((len (length payload-data)))
-        (assert (< len 126))
-        (make-frame
-         :fin 1
-         :opcode #x1
-         :mask 0
-         :payload-len len
-         :extended-payload-len 0
-         :masking-key empty
-         :payload-data payload-data))))
+  (defun server-sent-frame/text (octets first-p fin-p)
+    (let ((len (length octets)))
+      (assert (< len 126))
+      (make-frame
+       :fin (if fin-p 1 0)
+       :opcode (if first-p #x1 #x0)
+       :mask 0
+       :payload-len len
+       :extended-payload-len 0
+       :masking-key empty
+       :payload-data octets)))
 
   (let ((frame (make-frame
                 :fin 1
@@ -232,12 +231,22 @@
 
 (defgeneric client-stream (client))
 
-(defclass client ()
-  ((stream
-    :initarg :stream
-    :reader client-stream)))
-
-(defclass handler () ())
+(defun client-write-text (client string)
+  (let ((stream (client-stream client))
+        (octets (babel:string-to-octets string))
+        (count 125))
+    (let ((len (length octets)))
+      (loop for start = 0 then end-maybe
+            for end-maybe = (+ start count)
+            for fin-p = (<= len end-maybe)
+            for frame = (server-sent-frame/text
+                         (subseq octets
+                                 start
+                                 (if fin-p len end-maybe))
+                         (= start 0)
+                         fin-p)
+            do (write-frame stream frame)
+            while (not fin-p)))))
 
 (defgeneric create-client (handler stream)
   (:method (handler stream)
@@ -317,6 +326,14 @@
               while continue-p))
     (error (c)
       (print c)))) ;; TODO
+
+
+(defclass client ()
+  ((stream
+    :initarg :stream
+    :reader client-stream)))
+
+(defclass handler () ())
 
 ;;;
 

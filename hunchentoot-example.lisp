@@ -25,7 +25,9 @@
 
 (defmethod tiny-websocket:on-text ((handler handler) (client client)
                                    string)
-  (log:info "[~A] ~A" (client-id client) string))
+  (log:info "[~A] ~A" (client-id client) string)
+  (let ((resp (format nil "on-text: ~A" string)))
+    (tiny-websocket:client-write-text client resp)))
 
 ;;;
 
